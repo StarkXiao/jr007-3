@@ -87,6 +87,7 @@ export async function listQueue(query: QueueQuery) {
       slaDueAt: task.slaDueAt,
       overdue: task.decidedAt === null && task.slaDueAt.getTime() < now,
       claimedBy: task.assignee?.nickname ?? null,
+      autoAssigned: (task.dispatchMeta as { source?: string } | null)?.source != null,
       lockActive: task.lockedUntil !== null && task.lockedUntil.getTime() > now,
       lockExpiresAt: task.lockedUntil,
       spot: {
@@ -280,3 +281,12 @@ export {
   rejectTask,
   requestChanges,
 } from "./decisions";
+
+export {
+  claimNextTask,
+  dispatchOverview,
+  endSurge,
+  getMyDispatchProfile,
+  startSurge,
+  updateMyPreferences,
+} from "./dispatch";

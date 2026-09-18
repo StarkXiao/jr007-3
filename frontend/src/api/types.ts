@@ -158,6 +158,7 @@ export interface ReviewQueueItem {
   slaDueAt: string;
   overdue: boolean;
   claimedBy: string | null;
+  autoAssigned: boolean;
   lockActive: boolean;
   lockExpiresAt: string | null;
   spot: {
@@ -168,6 +169,51 @@ export interface ReviewQueueItem {
     mediaCount: number;
     author: { uuid: string; nickname: string; creditScore: number; approvedCount: number };
   };
+}
+
+export interface MyDispatchProfile {
+  preferredCategories: string[];
+  maxActive: number;
+  weightFactor: number;
+  paused: boolean;
+  pausedAt: string | null;
+  stats: {
+    windowDays: number;
+    total: number;
+    approved: number;
+    approvalRate: number | null;
+    categoryCounts: Record<string, number>;
+  };
+}
+
+export interface DispatchOverview {
+  windowDays: number;
+  backlog: { pending: number; overdue: number };
+  moderators: Array<{
+    userId: string;
+    nickname: string;
+    role: string;
+    paused: boolean;
+    preferredCategories: string[];
+    maxActive: number;
+    activeCount: number;
+    stats: { windowTotal: number; approved: number; approvalRate: number | null };
+    surge: {
+      id: string;
+      boostFactor: number;
+      categoryCodes: string[];
+      reason: string | null;
+      expiresAt: string;
+    } | null;
+  }>;
+  activeSurges: Array<{
+    id: string;
+    user: { uuid: string; nickname: string };
+    boostFactor: number;
+    categoryCodes: string[];
+    reason: string | null;
+    expiresAt: string;
+  }>;
 }
 
 export interface ReviewTaskDetail {

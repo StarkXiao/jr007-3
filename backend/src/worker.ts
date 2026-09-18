@@ -9,6 +9,8 @@ import {
 } from "./services/queue";
 import { processAsset } from "./modules/media/service";
 import { cleanup, purgeOriginalImages, slaSweep, staleSweep } from "./jobs";
+import { expireSurgesAndDispatch } from "./modules/reviews/dispatch";
+import { DISPATCH_SWEEP_CRON } from "./config/constants";
 import { initStorage } from "./services/storage";
 import { disconnectPrisma } from "./db/prisma";
 import { closeRedis, redis } from "./db/redis";
@@ -22,6 +24,7 @@ const SCHEDULES: Array<{ task: SweepJobData["task"]; pattern: string; label: str
   { task: "stale-sweep", pattern: "20 3 * * *", label: "每天 03:20：新鲜度巡检" },
   { task: "purge-originals", pattern: "40 3 * * *", label: "每天 03:40：清理超期原图" },
   { task: "cleanup", pattern: "0 4 * * *", label: "每天 04:00：清理过期令牌与通知" },
+  { task: "dispatch-sweep", pattern: DISPATCH_SWEEP_CRON, label: "每 10 分钟：加权派单与加派到期回收" },
 ];
 
 async function runSweep(task: SweepJobData["task"]) {
@@ -34,6 +37,8 @@ async function runSweep(task: SweepJobData["task"]) {
       return purgeOriginalImages();
     case "cleanup":
       return cleanup();
+    case "dispatch-sweep":
+      return expireSurgesAndDispatch();
     default:
       throw new Error(`未知的定时任务：${task}`);
   }

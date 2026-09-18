@@ -11,13 +11,19 @@ import {
   approveTask,
   claimTask,
   decideAppeal,
+  dispatchOverview,
+  endSurge,
+  getMyDispatchProfile,
   getTaskDetail,
+  claimNextTask,
   listAppeals,
   listQueue,
   moderationStats,
   rejectTask,
   releaseTask,
   requestChanges,
+  startSurge,
+  updateMyPreferences,
 } from "./service";
 
 export const moderationRouter = Router();
@@ -82,6 +88,96 @@ moderationRouter.post(
   validate({ params: taskIdParam }),
   asyncHandler(async (req, res) => {
     res.json(ok(req, await releaseTask(bigintParam(req, "id"), req.user!)));
+  }),
+);
+
+// 加权派单：让系统按通过率、分类偏好、当前负载给我分一条最合适的任务
+moderationRouter.post(
+  "/moderation/claim-next",
+  requireAuth,
+  requireRole("moderator"),
+  rateLimit({ scope: "review-claim-next", limit: 60, windowSeconds: 300 }),
+  asyncHandler(async (req, res) => {
+    res.json(ok(req, await claimNextTask(req.user!)));
+  }),
+);
+
+// 审核员查看 / 更新自己的派单画像（偏好分类、在手上限、暂停派单）
+moderationRouter.get(
+  "/moderation/dispatch/me",
+  requireAuth,
+  requireRole("moderator"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(req, await getMyDispatchProfile(req.user!)));
+  }),
+);
+
+moderationRouter.patch(
+  "/moderation/dispatch/me",
+  requireAuth,
+  requireRole("moderator"),
+  validate({
+    body: z.object({
+      preferredCategories: z.array(z.string().max(32)).max(20).optional(),
+      maxActive: z.number().int().min(1).max(50).optional(),
+      paused: z.boolean().optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    res.json(ok(req, await updateMyPreferences(req.user!, req.body)));
+  }),
+);
+
+// ------------------------------------------------------------------ 临时加派（管理员）
+
+const surgeBody = z.object({
+  userUuids: z.array(z.string().uuid()).min(1).max(20),
+  hours: z.coerce.number().int().min(1).max(720),
+  boostFactor: z.coerce.number().min(1).max(5).optional(),
+  categoryCodes: z.array(z.string().max(32)).max(20).optional(),
+  reason: z.string().trim().min(2).max(200).optional(),
+});
+
+moderationRouter.get(
+  "/moderation/dispatch/overview",
+  requireAuth,
+  requireRole("admin"),
+  asyncHandler(async (req, res) => {
+    res.json(ok(req, await dispatchOverview()));
+  }),
+);
+
+moderationRouter.post(
+  "/moderation/dispatch/surges",
+  requireAuth,
+  requireRole("admin"),
+  validate({ body: surgeBody }),
+  asyncHandler(async (req, res) => {
+    res.json(ok(req, await startSurge(req.user!, req.body)));
+  }),
+);
+
+moderationRouter.post(
+  "/moderation/dispatch/surges/:id/end",
+  requireAuth,
+  requireRole("admin"),
+  validate({
+    params: z.object({ id: z.coerce.bigint() }),
+    body: z.object({
+      reassign: z.boolean().optional(),
+      reason: z.string().trim().min(2).max(200).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    res.json(
+      ok(
+        req,
+        await endSurge(req.user!, bigintParam(req, "id"), {
+          reassign: req.body.reassign,
+          reason: req.body.reason,
+        }),
+      ),
+    );
   }),
 );
 

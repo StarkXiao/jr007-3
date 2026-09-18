@@ -410,6 +410,13 @@ async function main(): Promise<void> {
   const moderatorId = userIdByEmail.get("moderator@example.com")!;
   let created = 0;
 
+  // 让种子审核员开箱即有派单画像（偏好长椅分类）
+  await prisma.moderatorProfile.upsert({
+    where: { userId: moderatorId },
+    create: { userId: moderatorId, preferredCategories: ["bench"], maxActive: 10 },
+    update: {},
+  });
+
   for (const spot of SPOTS) {
     const categoryId = categoryIdByCode.get(spot.categoryCode);
     if (!categoryId) continue;

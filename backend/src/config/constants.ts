@@ -10,6 +10,8 @@ export const ERROR_CODES = {
   NOT_FOUND: "NOT_FOUND",
   REVIEW_ALREADY_CLAIMED: "REVIEW_ALREADY_CLAIMED",
   REVIEW_LOCK_EXPIRED: "REVIEW_LOCK_EXPIRED",
+  REVIEW_NOTHING_TO_CLAIM: "REVIEW_NOTHING_TO_CLAIM",
+  REVIEW_SURGE_ENDED: "REVIEW_SURGE_ENDED",
   FILE_TOO_LARGE: "FILE_TOO_LARGE",
   UNSUPPORTED_MEDIA_TYPE: "UNSUPPORTED_MEDIA_TYPE",
   PRIVACY_NOT_CONFIRMED: "PRIVACY_NOT_CONFIRMED",
@@ -67,6 +69,9 @@ export const NOTIFICATION_TYPES = {
   comment_hidden: "评论被隐藏",
   report_result: "举报处理结果",
   spot_stale: "条目信息可能已过期",
+  review_assigned: "新审核任务",
+  surge_started: "已加入临时审核支援",
+  surge_ended: "临时审核支援已结束",
 } as const;
 
 export type NotificationType = keyof typeof NOTIFICATION_TYPES;
@@ -110,6 +115,9 @@ export const AUDIT_ACTIONS = {
   REPORT_RESOLVE: "report.resolve",
   REPORT_DISMISS: "report.dismiss",
   CATEGORY_SCHEMA_UPDATE: "category.schema.update",
+  DISPATCH_PREFERENCE_UPDATE: "dispatch.preference.update",
+  DISPATCH_SURGE_START: "dispatch.surge.start",
+  DISPATCH_SURGE_END: "dispatch.surge.end",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -134,6 +142,29 @@ export const REPORT_MERGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** 审核任务领取锁时长 */
 export const REVIEW_LOCK_MS = 30 * 60 * 1000;
+
+// ------------------------------------------------------------------ 加权派单
+
+/** 统计窗口：通过率与分类占比只看近 90 天的决策，老黄历不代表现在的水平 */
+export const DISPATCH_STATS_WINDOW_MS = 90 * 86400000;
+/** 新审核员（样本不足）贝叶斯平滑的先验样本量 */
+export const DISPATCH_PRIOR_SAMPLE = 10;
+/** 通过率因子的上下限：通过率只做温和调节，避免"通得越多派得越多"的马太效应 */
+export const DISPATCH_APPROVAL_FACTOR_MIN = 0.8;
+export const DISPATCH_APPROVAL_FACTOR_MAX = 1.2;
+/** 命中偏好分类时的偏好因子；无偏好命中为 1 */
+export const DISPATCH_PREFERRED_FACTOR = 2;
+/** 历史上最常处理该分类（占比最高）时的隐性偏好因子上限 */
+export const DISPATCH_HISTORY_FACTOR_MAX = 1.5;
+/** 自动派单一轮最多处理多少任务，避免单次巡检长事务 */
+export const DISPATCH_BATCH_SIZE = 100;
+/** 自动派单巡检间隔（由 worker 调度） */
+export const DISPATCH_SWEEP_CRON = "*/10 * * * *";
+/** 加派倍数允许的范围 */
+export const DISPATCH_SURGE_BOOST_MIN = 1;
+export const DISPATCH_SURGE_BOOST_MAX = 5;
+/** 加派最长持续时间：30 天，防止"临时"变成"永久" */
+export const DISPATCH_SURGE_MAX_HOURS = 30 * 24;
 
 /** 原图签名 URL 有效期 */
 export const SIGNED_URL_TTL_MS = 5 * 60 * 1000;

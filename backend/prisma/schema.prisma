@@ -122,9 +122,55 @@ model User {
   blurRegions       BlurRegion[]
   categorySchemas   CategorySchema[]
   settings          UserSetting?
+  moderatorProfile  ModeratorProfile?
+  dispatchSurges    DispatchSurge[]
+  surgesEnded       DispatchSurge[]  @relation("SurgeEndedBy")
 
   @@index([role, status], map: "idx_users_role_status")
   @@map("users")
+}
+
+// 审核员派单画像。只有参与加权派单的审核角色才有这一行。
+// 偏好分类是审核员显式声明的，历史通过率 / 分类处理占比由决策记录实时聚合，
+// 不落冗余字段，避免出现"统计和工单对不上"的情况。
+model ModeratorProfile {
+  userId       BigInt @id @map("user_id")
+  // 手动权重修正，正常为 1，管理员可用于临时抬升或压低某人的派单量（0.1 ~ 3）
+  weightFactor Float  @default(1) @map("weight_factor") @db.DoublePrecision
+  maxActive    Int    @default(10) @map("max_active") @db.SmallInt
+  // 显式偏好分类 code；为空表示不设偏好，完全由历史占比决定
+  preferredCategories String[] @default([]) @map("preferred_categories")
+  dispatchPausedAt DateTime? @map("dispatch_paused_at") @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("moderator_profiles")
+}
+
+// 临时加派批次：积压时管理员临时拉人接管，到期自动回收角色与未完成任务。
+model DispatchSurge {
+  id            BigInt    @id @default(autoincrement())
+  userId        BigInt    @map("user_id")
+  createdBy     BigInt    @map("created_by")
+  // 加派期间的额外派单倍数（在常规权重之上相乘）
+  boostFactor   Float     @default(2) @map("boost_factor") @db.DoublePrecision
+  // 只派这些分类的活；为空表示不限制，全部积压都可以接
+  categoryCodes String[]  @default([]) @map("category_codes")
+  reason        String?   @db.VarChar(200)
+  rolePromoted  Boolean   @default(false) @map("role_promoted")
+  expiresAt     DateTime  @map("expires_at") @db.Timestamptz(6)
+  endedAt       DateTime? @map("ended_at") @db.Timestamptz(6)
+  endedBy       BigInt?   @map("ended_by")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user       User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endedByUser User? @relation("SurgeEndedBy", fields: [endedBy], references: [id])
+
+  @@index([userId, endedAt], map: "idx_surge_user_active")
+  @@index([expiresAt], map: "idx_surge_expires")
+  @@map("dispatch_surges")
 }
 
 model RefreshToken {
@@ -330,6 +376,8 @@ model ReviewTask {
   appealDeadline  DateTime?    @map("appeal_deadline") @db.Timestamptz(6)
   slaDueAt        DateTime     @map("sla_due_at") @db.Timestamptz(6)
   decidedAt       DateTime?    @map("decided_at") @db.Timestamptz(6)
+  // 派单来源：weighted（加权自动派单）/ surge（加派批次 id 与原因，仅用于审计展示）/ null（人工领取）
+  dispatchMeta    Json?        @map("dispatch_meta")
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
 
   spot         Spot         @relation(fields: [spotId], references: [id], onDelete: Cascade)
