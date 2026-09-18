@@ -10,6 +10,8 @@ export const ERROR_CODES = {
   NOT_FOUND: "NOT_FOUND",
   REVIEW_ALREADY_CLAIMED: "REVIEW_ALREADY_CLAIMED",
   REVIEW_LOCK_EXPIRED: "REVIEW_LOCK_EXPIRED",
+  DISPATCH_UNAVAILABLE: "DISPATCH_UNAVAILABLE",
+  TEMP_ASSIGNMENT_INVALID: "TEMP_ASSIGNMENT_INVALID",
   FILE_TOO_LARGE: "FILE_TOO_LARGE",
   UNSUPPORTED_MEDIA_TYPE: "UNSUPPORTED_MEDIA_TYPE",
   PRIVACY_NOT_CONFIRMED: "PRIVACY_NOT_CONFIRMED",
@@ -110,6 +112,11 @@ export const AUDIT_ACTIONS = {
   REPORT_RESOLVE: "report.resolve",
   REPORT_DISMISS: "report.dismiss",
   CATEGORY_SCHEMA_UPDATE: "category.schema.update",
+  REVIEW_DISPATCH: "review.dispatch",
+  REVIEW_DISPATCH_PROFILE: "review.dispatch.profile",
+  REVIEW_TEMP_ASSIGN: "review.temp_assign",
+  REVIEW_TEMP_REVOKE: "review.temp_revoke",
+  REVIEW_TEMP_TAKEOVER: "review.temp_takeover",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -134,6 +141,26 @@ export const REPORT_MERGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** 审核任务领取锁时长 */
 export const REVIEW_LOCK_MS = 30 * 60 * 1000;
+
+// ------------------------------------------------------------------ 加权派单
+
+/** 画像统计滚动窗口：只统计近 90 天的已决任务，老习惯不代表现在 */
+export const DISPATCH_STATS_WINDOW_MS = 90 * 86400000;
+
+/** 新审核员冷启动样本数：低于该值时给探索加成，避免"没历史 → 永远没单 → 永远没历史" */
+export const DISPATCH_MIN_SAMPLE = 5;
+
+/** 新审核员探索加成倍率 */
+export const DISPATCH_EXPLORATION_BOOST = 1.25;
+
+/** 单次加派批量接管积压的上限 */
+export const TEMP_TAKEOVER_LIMIT = 50;
+
+/** 临时加派最长时长（小时） */
+export const TEMP_ASSIGNMENT_MAX_HOURS = 168;
+
+/** 画像缓存存活时间（秒），决策后会被主动失效 */
+export const DISPATCH_PROFILE_CACHE_TTL_SECONDS = 60;
 
 /** 原图签名 URL 有效期 */
 export const SIGNED_URL_TTL_MS = 5 * 60 * 1000;

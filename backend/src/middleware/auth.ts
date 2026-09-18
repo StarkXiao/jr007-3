@@ -4,6 +4,7 @@ import { env } from "../config/env";
 import { ERROR_CODES } from "../config/constants";
 import { prisma } from "../db/prisma";
 import { AppError } from "../utils/errors";
+import { expireDueTempAssignments } from "../modules/reviews/tempAssignment";
 import type { AuthUser } from "../types/auth";
 
 export interface AccessTokenPayload {
@@ -27,6 +28,11 @@ export function verifyAccessToken(token: string): AccessTokenPayload {
 }
 
 async function loadUser(uuid: string): Promise<AuthUser | undefined> {
+  // 临时加派到期回收放在鉴权路径兜底：即使 worker 没在跑，
+  // 临时审核权限也会在下一次请求时被收回，不会变成永久提权。
+  // 无到期记录时这只是一条走索引的小查询，开销可接受。
+  await expireDueTempAssignments().catch(() => undefined);
+
   const user = await prisma.user.findUnique({
     where: { uuid },
     select: {

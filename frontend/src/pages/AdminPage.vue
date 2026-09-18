@@ -15,6 +15,13 @@ const audits = ref<Array<Record<string, any>>>([]);
 const categories = ref<Array<Record<string, any>>>([]);
 const loading = ref(false);
 
+// 派单调度
+const dispatchProfiles = ref<Array<Record<string, any>>>([]);
+const tempAssignments = ref<Array<Record<string, any>>>([]);
+const takeoverForm = ref({ limit: 20, overdueOnly: true, reason: "" });
+const takingOver = ref(false);
+const grantForm = ref({ userUuid: "", hours: 8, reason: "", taskLimit: 0 });
+
 async function loadDashboard() {
   dashboard.value = await api.get<Record<string, any>>("/admin/dashboard");
 }
@@ -42,6 +49,82 @@ async function loadAudits() {
 async function loadCategories() {
   const result = await api.get<{ items: Array<Record<string, any>> }>("/admin/categories");
   categories.value = result.items;
+}
+
+async function loadDispatch() {
+  const [profilesResult, assignmentsResult] = await Promise.all([
+    api.get<{ items: Array<Record<string, any>> }>("/admin/dispatch/profiles"),
+    api.get<{ items: Array<Record<string, any>> }>("/admin/dispatch/temp-assignments", { status: "active" }),
+  ]);
+  dispatchProfiles.value = profilesResult.items;
+  tempAssignments.value = assignmentsResult.items;
+}
+
+async function grantTempAssignment() {
+  if (!grantForm.value.userUuid || grantForm.value.reason.trim().length < 2) {
+    ElMessage.warning("请填写用户 UUID 与加派原因");
+    return;
+  }
+  try {
+    const result = await api.post<{ roleChanged: boolean }>("/admin/dispatch/temp-assignments", {
+      userUuid: grantForm.value.userUuid.trim(),
+      hours: grantForm.value.hours,
+      reason: grantForm.value.reason.trim(),
+      taskLimit: grantForm.value.taskLimit || undefined,
+    });
+    ElMessage.success(result.roleChanged ? "已临时提权为审核员" : "已登记加派批次");
+    grantForm.value = { userUuid: "", hours: 8, reason: "", taskLimit: 0 };
+    await loadDispatch();
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  }
+}
+
+async function revokeTempAssignment(row: Record<string, any>) {
+  try {
+    await api.post(`/admin/dispatch/temp-assignments/${row.batchId}/revoke`);
+    ElMessage.success("已撤销加派并恢复原角色");
+    await loadDispatch();
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  }
+}
+
+async function takeoverBacklog() {
+  if (takeoverForm.value.reason.trim().length < 2) {
+    ElMessage.warning("请填写批量接管的原因");
+    return;
+  }
+  takingOver.value = true;
+  try {
+    const result = await api.post<{ assigned: Array<Record<string, any>>; skipped: Array<Record<string, any>> }>(
+      "/admin/dispatch/takeover",
+      {
+        limit: takeoverForm.value.limit,
+        overdueOnly: takeoverForm.value.overdueOnly,
+        reason: takeoverForm.value.reason.trim(),
+      },
+    );
+    ElMessage.success(`已分配 ${result.assigned.length} 条，跳过 ${result.skipped.length} 条`);
+    takeoverForm.value.reason = "";
+    await Promise.all([loadDispatch(), loadDashboard()]);
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  } finally {
+    takingOver.value = false;
+  }
+}
+
+async function toggleDispatchEnabled(row: Record<string, any>) {
+  try {
+    await api.patch(`/admin/dispatch/profiles/${row.user.uuid}`, {
+      dispatchEnabled: !row.dispatchEnabled,
+    });
+    ElMessage.success(row.dispatchEnabled ? "已暂停该审核员的自动派单" : "已恢复自动派单");
+    await loadDispatch();
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  }
 }
 
 async function banUser(row: Record<string, any>) {
@@ -146,6 +229,7 @@ async function loadTab(name: string) {
     if (name === "users") await loadUsers();
     if (name === "categories") await loadCategories();
     if (name === "appeals") await loadAppeals();
+    if (name === "dispatch") await loadDispatch();
     if (name === "audit") await loadAudits();
   } catch (error) {
     ElMessage.error((error as Error).message);
@@ -322,6 +406,142 @@ onMounted(async () => {
               <el-button size="small" @click="decideAppeal(item, 'uphold')">维持原判</el-button>
             </div>
           </div>
+        </el-card>
+      </el-tab-pane>
+
+      <el-tab-pane label="派单调度" name="dispatch">
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          title="加权派单按「历史通过率匹配 × 分类偏好 × 在办负载」给任务选审核员"
+          description="超时积压时可临时加派人手提权接管，加派到期后自动恢复原角色；也可以一键把积压批量预分配出去。"
+          style="margin-bottom: 12px"
+        />
+
+        <el-row :gutter="12">
+          <el-col :xs="24" :md="12">
+            <el-card shadow="never">
+              <template #header>临时加派人手</template>
+              <el-form label-width="92px" size="small">
+                <el-form-item label="用户 UUID">
+                  <el-input v-model="grantForm.userUuid" placeholder="被加派人的 uuid" />
+                </el-form-item>
+                <el-form-item label="有效时长">
+                  <el-input-number v-model="grantForm.hours" :min="1" :max="168" />
+                  <span class="muted" style="margin-left: 8px">小时（1–168）</span>
+                </el-form-item>
+                <el-form-item label="接管上限">
+                  <el-input-number v-model="grantForm.taskLimit" :min="0" :max="100" />
+                  <span class="muted" style="margin-left: 8px">0 表示不限</span>
+                </el-form-item>
+                <el-form-item label="加派原因">
+                  <el-input v-model="grantForm.reason" maxlength="200" show-word-limit />
+                </el-form-item>
+                <el-form-item>
+                  <el-button type="primary" @click="grantTempAssignment">加派并提权</el-button>
+                </el-form-item>
+              </el-form>
+
+              <el-table :data="tempAssignments" size="small" style="margin-top: 8px">
+                <el-table-column label="人员" min-width="120">
+                  <template #default="{ row }">
+                    {{ row.user.nickname }}
+                    <el-tag v-if="row.user.role === 'moderator' && row.originalRole !== 'moderator'" size="small" type="warning">
+                      临时
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="reason" label="原因" min-width="140" show-overflow-tooltip />
+                <el-table-column label="到期时间" width="170">
+                  <template #default="{ row }">{{ new Date(row.expiresAt).toLocaleString("zh-CN") }}</template>
+                </el-table-column>
+                <el-table-column label="已派" width="70">
+                  <template #default="{ row }">{{ row.assignedCount }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="90">
+                  <template #default="{ row }">
+                    <el-button size="small" type="danger" plain @click="revokeTempAssignment(row)">撤销</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-card>
+          </el-col>
+
+          <el-col :xs="24" :md="12">
+            <el-card shadow="never">
+              <template #header>一键接管积压</template>
+              <el-form label-width="92px" size="small">
+                <el-form-item label="只派超时单">
+                  <el-switch v-model="takeoverForm.overdueOnly" />
+                </el-form-item>
+                <el-form-item label="本轮条数">
+                  <el-input-number v-model="takeoverForm.limit" :min="1" :max="50" />
+                </el-form-item>
+                <el-form-item label="原因">
+                  <el-input v-model="takeoverForm.reason" maxlength="200" show-word-limit placeholder="例如：节假日积压泄洪" />
+                </el-form-item>
+                <el-form-item>
+                  <el-button type="danger" :loading="takingOver" @click="takeoverBacklog">
+                    批量分配积压
+                  </el-button>
+                </el-form-item>
+              </el-form>
+              <p class="muted" style="font-size: 12px">
+                不指定人员时系统按画像自动选派全部可用审核员（含在加派期内的临时人手），每人有分配上限防止垄断。
+              </p>
+            </el-card>
+          </el-col>
+        </el-row>
+
+        <el-card shadow="never" style="margin-top: 12px">
+          <template #header>审核员派单画像</template>
+          <el-table :data="dispatchProfiles" size="small">
+            <el-table-column label="审核员" min-width="140">
+              <template #default="{ row }">
+                {{ row.user.nickname }}
+                <el-tag v-if="row.tempAssignment" size="small" type="warning" style="margin-left: 4px">临时</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="历史通过率" width="130">
+              <template #default="{ row }">
+                {{ row.approvalRate === null ? "无数据" : `${(row.approvalRate * 100).toFixed(1)}%` }}
+                <span class="muted">（{{ row.decidedCount }} 条）</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="分类偏好（自动统计 / 手工权重）" min-width="260">
+              <template #default="{ row }">
+                <el-tag
+                  v-for="(stat, code) in row.categoryStats"
+                  :key="code"
+                  size="small"
+                  :type="row.categoryWeights[code] !== undefined ? 'success' : 'info'"
+                  style="margin: 2px"
+                >
+                  {{ code }}: {{ stat.decided }} 条
+                  <template v-if="row.categoryWeights[code] !== undefined">
+                    · 权重 {{ row.categoryWeights[code] }}
+                  </template>
+                </el-tag>
+                <span v-if="Object.keys(row.categoryStats).length === 0" class="muted">暂无</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="capacityFactor" label="容量系数" width="100" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.dispatchEnabled ? 'success' : 'info'" size="small">
+                  {{ row.dispatchEnabled ? "派单中" : "已暂停" }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="110">
+              <template #default="{ row }">
+                <el-button size="small" @click="toggleDispatchEnabled(row)">
+                  {{ row.dispatchEnabled ? "暂停派单" : "恢复派单" }}
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
         </el-card>
       </el-tab-pane>
 

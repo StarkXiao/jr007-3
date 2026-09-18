@@ -85,6 +85,13 @@ enum BlurAlgorithm {
   gaussian
 }
 
+// 加派批次状态：active 期间临时人手拥有审核权限；expired/revoked 后恢复原角色
+enum TempAssignmentStatus {
+  active
+  expired
+  revoked
+}
+
 model User {
   id            BigInt     @id @default(autoincrement())
   uuid          String     @unique @default(uuid()) @db.Uuid
@@ -122,6 +129,9 @@ model User {
   blurRegions       BlurRegion[]
   categorySchemas   CategorySchema[]
   settings          UserSetting?
+  moderatorProfile  ModeratorProfile?
+  tempAssignments   TempAssignment[]    @relation("TempAssignee")
+  tempBatchesCreated TempAssignment[]   @relation("TempBatchCreatedBy")
 
   @@index([role, status], map: "idx_users_role_status")
   @@map("users")
@@ -470,4 +480,52 @@ model AuditLog {
   @@index([targetType, targetId, createdAt], map: "idx_audit_target")
   @@index([action, createdAt], map: "idx_audit_action")
   @@map("audit_logs")
+}
+
+// 审核员画像：加权派单的依据。
+// 历史通过率与分类偏好由系统从已决任务滚动统计，偏好系数管理员可手工覆盖。
+model ModeratorProfile {
+  userId           BigInt   @id @map("user_id")
+  // 滚动窗口内已决任务数 / 其中通过数（含申诉改判通过）
+  decidedCount     Int      @default(0) @map("decided_count")
+  approvedCount    Int      @default(0) @map("approved_count")
+  // 各分类的已决数与通过数，形如 { "bench": { "decided": 12, "approved": 9 } }
+  categoryStats    Json     @default("{}") @map("category_stats")
+  // 手工分类偏好权重（0–2，缺省 1），未配置的分类回退到自动偏好
+  categoryWeights  Json     @default("{}") @map("category_weights")
+  // 0–1 的全局派单权重，用于临时调忙/调闲；1 为正常
+  capacityFactor   Float    @default(1) @map("capacity_factor")
+  dispatchEnabled  Boolean  @default(true) @map("dispatch_enabled")
+  statsUpdatedAt   DateTime @default(now()) @map("stats_updated_at") @db.Timestamptz(6)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("moderator_profiles")
+}
+
+// 临时加派：积压时把普通用户临时提权为审核员，到期或撤销后自动恢复原角色。
+// 一条记录代表一次加派批次（可同时加派多人），batchId 供批量操作与审计使用。
+model TempAssignment {
+  id            BigInt               @id @default(autoincrement())
+  batchId       String               @unique @map("batch_id") @db.Uuid
+  userId        BigInt               @map("user_id")
+  grantedBy     BigInt               @map("granted_by")
+  originalRole  UserRole             @map("original_role")
+  status        TempAssignmentStatus @default(active)
+  reason        String               @db.VarChar(200)
+  // 加派时最多希望其接管的任务数（仅用于批量预分配上限，不限制后续领取）
+  taskLimit     Int                  @default(0) @map("task_limit")
+  assignedCount Int                  @default(0) @map("assigned_count")
+  expiresAt     DateTime             @map("expires_at") @db.Timestamptz(6)
+  revokedAt     DateTime?            @map("revoked_at") @db.Timestamptz(6)
+  createdAt     DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user       User  @relation("TempAssignee", fields: [userId], references: [id], onDelete: Cascade)
+  grantedByUser User @relation("TempBatchCreatedBy", fields: [grantedBy], references: [id])
+
+  @@index([userId, status], map: "idx_temp_assignment_user")
+  @@index([status, expiresAt], map: "idx_temp_assignment_status")
+  @@map("temp_assignments")
 }

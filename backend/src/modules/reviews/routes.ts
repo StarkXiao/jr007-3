@@ -19,6 +19,8 @@ import {
   releaseTask,
   requestChanges,
 } from "./service";
+import { dispatchNext } from "./dispatch";
+import { getDispatchProfiles } from "./profiles";
 
 export const moderationRouter = Router();
 
@@ -31,6 +33,7 @@ const queueQuery = z.object({
   categoryCode: z.string().max(32).optional(),
   hasMedia: z.coerce.boolean().optional(),
   overdueOnly: z.coerce.boolean().optional(),
+  scope: z.enum(["mine", "all"]).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
 });
@@ -52,7 +55,7 @@ moderationRouter.get(
   requireRole("moderator"),
   validate({ query: queueQuery }),
   asyncHandler(async (req, res) => {
-    res.json(ok(req, await listQueue(req.query as never)));
+    res.json(ok(req, await listQueue(req.query as never, req.user!)));
   }),
 );
 
@@ -62,6 +65,52 @@ moderationRouter.get(
   requireRole("moderator"),
   asyncHandler(async (req, res) => {
     res.json(ok(req, await moderationStats()));
+  }),
+);
+
+// 加权派单：依据审核员历史通过率与分类偏好，从待审池里挑最合适的任务并直接加锁
+moderationRouter.post(
+  "/moderation/dispatch/next",
+  requireAuth,
+  requireRole("moderator"),
+  rateLimit({ scope: "review-dispatch", limit: 120, windowSeconds: 3600 }),
+  validate({
+    body: z
+      .object({
+        categoryCode: z.string().max(32).optional(),
+        overdueOnly: z.boolean().optional(),
+      })
+      .default({}),
+  }),
+  asyncHandler(async (req, res) => {
+    res.json(ok(req, await dispatchNext(req.user!, req.body)));
+  }),
+);
+
+// 派单面板：查看当前可派单审核员的画像（通过率/分类偏好/在办负载）
+moderationRouter.get(
+  "/moderation/dispatch/moderators",
+  requireAuth,
+  requireRole("moderator"),
+  asyncHandler(async (req, res) => {
+    const profiles = await getDispatchProfiles();
+    res.json(
+      ok(req, {
+        items: profiles.map((profile) => ({
+          userId: profile.userId.toString(),
+          decidedCount: profile.decidedCount,
+          approvedCount: profile.approvedCount,
+          approvalRate:
+            profile.decidedCount > 0
+              ? Number((profile.approvedCount / profile.decidedCount).toFixed(3))
+              : null,
+          categoryStats: profile.categoryStats,
+          categoryWeights: profile.categoryWeights,
+          capacityFactor: profile.capacityFactor,
+          temporary: profile.temporary,
+        })),
+      }),
+    );
   }),
 );
 

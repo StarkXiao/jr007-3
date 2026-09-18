@@ -11,6 +11,13 @@ import { AUDIT_ACTIONS } from "../../config/constants";
 import { recordAudit } from "../../services/audit";
 import { notify } from "../../services/notify";
 import { moderationStats } from "../reviews/decisions";
+import { takeoverBacklog } from "../reviews/dispatch";
+import {
+  grantTempAssignment,
+  revokeTempAssignment,
+  expireDueTempAssignments,
+} from "../reviews/tempAssignment";
+import { listTempAssignments, updateModeratorConfig } from "../reviews/profiles";
 
 export const adminRouter = Router();
 
@@ -409,5 +416,184 @@ adminRouter.get(
   asyncHandler(async (req, res) => {
     const { filterStats } = await import("../../services/moderation/contentFilter");
     res.json(ok(req, toJsonValue({ ...filterStats })));
+  }),
+);
+
+// ---------------------------------------------------------------- 加权派单
+
+adminRouter.get(
+  "/admin/dispatch/profiles",
+  asyncHandler(async (req, res) => {
+    const profiles = await prisma.moderatorProfile.findMany({
+      orderBy: { updatedAt: "desc" },
+      include: {
+        user: {
+          select: { uuid: true, nickname: true, role: true, status: true, email: true },
+        },
+      },
+    });
+
+    const activeBatches = await prisma.tempAssignment.findMany({
+      where: { status: "active", expiresAt: { gt: new Date() } },
+      select: { userId: true, batchId: true, expiresAt: true },
+    });
+    const tempByUser = new Map(activeBatches.map((batch) => [batch.userId.toString(), batch]));
+
+    res.json(
+      ok(req, {
+        items: profiles.map((profile) => ({
+          user: {
+            uuid: profile.user.uuid,
+            nickname: profile.user.nickname,
+            email: profile.user.email,
+            role: profile.user.role,
+            status: profile.user.status,
+          },
+          decidedCount: profile.decidedCount,
+          approvedCount: profile.approvedCount,
+          approvalRate:
+            profile.decidedCount > 0
+              ? Number((profile.approvedCount / profile.decidedCount).toFixed(3))
+              : null,
+          categoryStats: profile.categoryStats,
+          categoryWeights: profile.categoryWeights,
+          capacityFactor: profile.capacityFactor,
+          dispatchEnabled: profile.dispatchEnabled,
+          statsUpdatedAt: profile.statsUpdatedAt,
+          tempAssignment: tempByUser.get(profile.userId.toString())
+            ? {
+                batchId: tempByUser.get(profile.userId.toString())!.batchId,
+                expiresAt: tempByUser.get(profile.userId.toString())!.expiresAt,
+              }
+            : null,
+        })),
+      }),
+    );
+  }),
+);
+
+adminRouter.patch(
+  "/admin/dispatch/profiles/:uuid",
+  validate({
+    params: z.object({ uuid: z.string().uuid() }),
+    body: z.object({
+      // 分类 code → 0–2 的手工权重
+      categoryWeights: z.record(z.string().max(32), z.number().min(0).max(2)).optional(),
+      capacityFactor: z.number().min(0).max(2).optional(),
+      dispatchEnabled: z.boolean().optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const user = await prisma.user.findUnique({
+      where: { uuid: req.params.uuid },
+      select: { id: true, nickname: true },
+    });
+    if (!user) throw AppError.notFound("用户不存在");
+
+    const updated = await updateModeratorConfig(user.id, req.body);
+
+    await recordAudit({
+      actorId: req.user!.id,
+      action: AUDIT_ACTIONS.REVIEW_DISPATCH_PROFILE,
+      targetType: "user",
+      targetId: user.id,
+      after: {
+        categoryWeights: updated.categoryWeights,
+        capacityFactor: updated.capacityFactor,
+        dispatchEnabled: updated.dispatchEnabled,
+      },
+      reason: "调整审核员派单画像",
+      req,
+    });
+
+    res.json(
+      ok(req, {
+        user: { uuid: req.params.uuid, nickname: user.nickname },
+        categoryWeights: updated.categoryWeights,
+        capacityFactor: updated.capacityFactor,
+        dispatchEnabled: updated.dispatchEnabled,
+      }),
+    );
+  }),
+);
+
+// ---------------------------------------------------------------- 临时加派
+
+adminRouter.get(
+  "/admin/dispatch/temp-assignments",
+  validate({
+    query: z.object({
+      status: z.enum(["active", "expired", "revoked"]).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const items = await listTempAssignments(req.query.status as "active" | "expired" | "revoked" | undefined);
+    res.json(
+      ok(req, {
+        items: items.map((item) => ({
+          batchId: item.batchId,
+          user: item.user,
+          grantedBy: item.grantedByUser.nickname,
+          originalRole: item.originalRole,
+          status: item.status,
+          reason: item.reason,
+          taskLimit: item.taskLimit,
+          assignedCount: item.assignedCount,
+          expiresAt: item.expiresAt,
+          revokedAt: item.revokedAt,
+          createdAt: item.createdAt,
+        })),
+      }),
+    );
+  }),
+);
+
+adminRouter.post(
+  "/admin/dispatch/temp-assignments",
+  validate({
+    body: z.object({
+      userUuid: z.string().uuid(),
+      hours: z.number().int().min(1).max(168),
+      reason: z.string().trim().min(2).max(200),
+      taskLimit: z.number().int().min(0).max(100).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const result = await grantTempAssignment(req.user!, req.body);
+    res.status(201).json(ok(req, result));
+  }),
+);
+
+adminRouter.post(
+  "/admin/dispatch/temp-assignments/:batchId/revoke",
+  validate({ params: z.object({ batchId: z.string().uuid() }) }),
+  asyncHandler(async (req, res) => {
+    res.json(ok(req, await revokeTempAssignment(req.params.batchId, req.user!)));
+  }),
+);
+
+// 立即收回到期加派（日常由定时任务自动执行，此接口供管理员手动触发）
+adminRouter.post(
+  "/admin/dispatch/temp-assignments/expire-due",
+  asyncHandler(async (req, res) => {
+    const expired = await expireDueTempAssignments();
+    res.json(ok(req, { expired }));
+  }),
+);
+
+// 批量接管积压：按加权画像把超时/待审任务预分配给审核员（可指定临时加派人员）
+adminRouter.post(
+  "/admin/dispatch/takeover",
+  validate({
+    body: z.object({
+      moderatorUuids: z.array(z.string().uuid()).max(50).optional(),
+      categoryCode: z.string().max(32).optional(),
+      overdueOnly: z.boolean().default(true),
+      limit: z.number().int().min(1).max(50).default(20),
+      reason: z.string().trim().min(2).max(200),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    res.json(ok(req, await takeoverBacklog(req.user!, req.body)));
   }),
 );

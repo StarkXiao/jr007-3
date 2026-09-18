@@ -36,7 +36,7 @@ cd frontend && npm run dev    # http://localhost:5173
 ## 验证
 
 ```bash
-cd backend && npm run typecheck && npm test   # 31 个单元测试 + 20 个集成测试
+cd backend && npm run typecheck && npm test   # 55 个单元测试 + 22 个集成测试
 cd frontend && npm run typecheck && npm run build
 ```
 

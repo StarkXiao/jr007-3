@@ -11,7 +11,9 @@ const items = ref<ReviewQueueItem[]>([]);
 const total = ref(0);
 const loading = ref(false);
 const onlyOverdue = ref(false);
+const onlyMine = ref(false);
 const selecting = ref<string | null>(null);
+const dispatching = ref(false);
 
 async function load() {
   loading.value = true;
@@ -20,6 +22,7 @@ async function load() {
       api.get<Paged<ReviewQueueItem>>("/moderation/queue", {
         pageSize: 50,
         overdueOnly: onlyOverdue.value ? "true" : undefined,
+        scope: onlyMine.value ? "mine" : undefined,
       }),
       api.get<{
         queue: { pending: number; inReview: number; overdue: number };
@@ -70,6 +73,24 @@ async function openTask(task: ReviewQueueItem) {
   void router.push({ name: "review-detail", params: { id: task.id } });
 }
 
+// 加权派单：服务端按历史通过率、分类偏好与在办负载挑任务并直接加锁
+async function dispatchNext() {
+  dispatching.value = true;
+  try {
+    const result = await api.post<{ taskId: string; lockedUntil: string; score: number }>(
+      "/moderation/dispatch/next",
+      onlyOverdue.value ? { overdueOnly: true } : {},
+    );
+    ElMessage.success(`已按你的通过率与分类偏好派单（匹配分 ${result.score}）`);
+    await load();
+    void router.push({ name: "review-detail", params: { id: result.taskId } });
+  } catch (error) {
+    ElMessage.error((error as Error).message);
+  } finally {
+    dispatching.value = false;
+  }
+}
+
 onMounted(load);
 </script>
 
@@ -78,6 +99,14 @@ onMounted(load);
     <h1 class="page-title">
       审核台
       <el-button size="small" @click="load">刷新</el-button>
+      <el-button
+        size="small"
+        type="success"
+        :loading="dispatching"
+        @click="dispatchNext"
+      >
+        智能派单
+      </el-button>
     </h1>
 
     <el-row v-if="statsRef" :gutter="12" style="margin-bottom: 16px">
@@ -105,6 +134,7 @@ onMounted(load);
 
     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px">
       <el-checkbox v-model="onlyOverdue" @change="load">只看超时的</el-checkbox>
+      <el-checkbox v-model="onlyMine" @change="load">只看派给我的</el-checkbox>
       <span class="muted">共 {{ total }} 条待处理</span>
       <span v-if="statsRef" class="muted">近 30 天平均处理时长 {{ statsRef.averageReviewHours }} 小时</span>
     </div>

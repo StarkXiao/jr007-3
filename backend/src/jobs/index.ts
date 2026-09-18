@@ -6,6 +6,8 @@ import { purgeOriginal } from "../modules/media/service";
 import { notify } from "../services/notify";
 import { logger } from "../utils/logger";
 import { redis } from "../db/redis";
+import { expireDueTempAssignments } from "../modules/reviews/tempAssignment";
+import { rebuildModeratorStats } from "../modules/reviews/profiles";
 
 const MS_PER_DAY = 86400000;
 const OVERDUE_ALERT_KEY = "psdm:sla-alert-sent";
@@ -16,8 +18,14 @@ const OVERDUE_ALERT_TTL_SECONDS = 6 * 3600;
  * 超时的审核任务与举报工单会被提升优先级并提醒管理员——
  * 一个没有超时机制的审核队列，最终一定会积压到没人看。
  */
-export async function slaSweep(): Promise<{ overdueTasks: number; overdueReports: number }> {
+export async function slaSweep(): Promise<{ overdueTasks: number; overdueReports: number; tempAssignmentsExpired: number }> {
   const now = new Date();
+
+  // 加派权限随 SLA 巡检一起兜底回收（鉴权路径也有兜底，这里负责通知之外的状态收敛）
+  const tempAssignmentsExpired = await expireDueTempAssignments(now).catch((error) => {
+    logger.warn({ err: (error as Error).message }, "临时加派到期回收失败");
+    return 0;
+  });
 
   const overdueTasks = await prisma.reviewTask.findMany({
     where: { decidedAt: null, slaDueAt: { lt: now }, status: { in: ["pending", "in_review", "appealed"] } },
@@ -72,7 +80,7 @@ export async function slaSweep(): Promise<{ overdueTasks: number; overdueReports
     );
   }
 
-  return { overdueTasks: overdueTasks.length, overdueReports: overdueReports.length };
+  return { overdueTasks: overdueTasks.length, overdueReports: overdueReports.length, tempAssignmentsExpired };
 }
 
 /**
@@ -217,4 +225,17 @@ export async function cleanup(): Promise<{
     locks: locks.count,
     unmuted: unmuted.count,
   };
+}
+
+/**
+ * 审核员画像兜底重算：每天一次。
+ * 决策时的增量更新只加不减，滑出统计窗口的老数据靠这里清掉。
+ */
+export async function rebuildDispatchStats(): Promise<{ moderators: number }> {
+  try {
+    return await rebuildModeratorStats();
+  } catch (error) {
+    logger.error({ err: (error as Error).message }, "审核员画像重算失败");
+    return { moderators: 0 };
+  }
 }

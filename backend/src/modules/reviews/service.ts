@@ -20,11 +20,13 @@ export interface QueueQuery {
   categoryCode?: string;
   hasMedia?: boolean;
   overdueOnly?: boolean;
+  /** mine=只看派给我的；默认展示可领取池 + 我在办的任务 */
+  scope?: "mine" | "all";
   page: number;
   pageSize: number;
 }
 
-export async function listQueue(query: QueueQuery) {
+export async function listQueue(query: QueueQuery, viewer?: AuthUser) {
   const pagination = parsePagination({
     page: query.page,
     pageSize: Math.min(query.pageSize, MAX_PAGE_SIZE),
@@ -33,6 +35,19 @@ export async function listQueue(query: QueueQuery) {
   const where: Prisma.ReviewTaskWhereInput = {
     status: query.status ?? { in: ["pending", "in_review"] },
   };
+
+  // 默认视图：可自由领取的待办 + 已经派（锁）给当前审核员的任务。
+  // 别人锁住的任务不进我的队列，避免满屏都是点了必然 409 的条目；
+  // scope=mine 时只看自己在办的，scope=all 由管理员视角使用。
+  if (!query.status) {
+    if (query.scope === "mine" && viewer) {
+      where.assignedTo = viewer.id;
+    } else if (query.scope !== "all" && viewer) {
+      where.OR = [{ assignedTo: null }, { assignedTo: viewer.id }];
+    }
+  } else if (query.scope === "mine" && viewer) {
+    where.assignedTo = viewer.id;
+  }
 
   const spotFilter: Prisma.SpotWhereInput = {};
   if (query.categoryCode) spotFilter.category = { code: query.categoryCode };

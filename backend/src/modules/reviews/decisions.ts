@@ -10,6 +10,7 @@ import { notify } from "../../services/notify";
 import { adjustCredit, CREDIT_DELTAS, incrementApprovedCount } from "../../services/moderation/credit";
 import { recordAudit } from "../../services/audit";
 import { logger } from "../../utils/logger";
+import { recordDecisionStats } from "./profiles";
 import type { AuthUser } from "../../types/auth";
 
 const DECIDABLE_STATUSES: ReviewStatus[] = ["pending", "in_review", "appealed"];
@@ -127,6 +128,13 @@ export async function approveTask(
   await incrementApprovedCount(task.spot.ownerId);
   await adjustCredit(task.spot.ownerId, CREDIT_DELTAS.SPOT_APPROVED);
 
+  // 回写审核员画像（通过率 / 分类偏好），加权派单依赖这份滚动统计
+  await recordDecisionStats({
+    moderatorId: moderator.id,
+    categoryCode: task.spot.category.code,
+    approved: true,
+  });
+
   await recordAudit({
     actorId: moderator.id,
     action: isAppeal ? AUDIT_ACTIONS.REVIEW_APPEAL_DECIDE : AUDIT_ACTIONS.REVIEW_APPROVE,
@@ -180,6 +188,12 @@ export async function requestChanges(
     }),
   ]);
 
+  await recordDecisionStats({
+    moderatorId: moderator.id,
+    categoryCode: task.spot.category.code,
+    approved: false,
+  });
+
   await recordAudit({
     actorId: moderator.id,
     action: AUDIT_ACTIONS.REVIEW_REQUEST_CHANGES,
@@ -228,6 +242,12 @@ export async function rejectTask(
   ]);
 
   await adjustCredit(task.spot.ownerId, CREDIT_DELTAS.SPOT_REJECTED);
+
+  await recordDecisionStats({
+    moderatorId: moderator.id,
+    categoryCode: task.spot.category.code,
+    approved: false,
+  });
 
   await recordAudit({
     actorId: moderator.id,
@@ -323,6 +343,12 @@ export async function decideAppeal(
       prisma.spot.update({ where: { id: task.spotId }, data: { status: "rejected_final" } }),
     ]);
 
+    await recordDecisionStats({
+      moderatorId: admin.id,
+      categoryCode: task.spot.category.code,
+      approved: false,
+    });
+
     await recordAudit({
       actorId: admin.id,
       action: AUDIT_ACTIONS.REVIEW_APPEAL_DECIDE,
@@ -377,6 +403,12 @@ export async function decideAppeal(
 
   await incrementApprovedCount(task.spot.ownerId);
   await adjustCredit(task.spot.ownerId, CREDIT_DELTAS.APPEAL_UPHELD);
+
+  await recordDecisionStats({
+    moderatorId: admin.id,
+    categoryCode: task.spot.category.code,
+    approved: true,
+  });
 
   await recordAudit({
     actorId: admin.id,
